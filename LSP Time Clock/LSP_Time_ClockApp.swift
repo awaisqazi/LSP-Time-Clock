@@ -2,22 +2,22 @@
 //  LSP_Time_ClockApp.swift
 //  LSP Time Clock
 //
-//  Created by Fez Qazi on 4/18/26.
-//
 
 import SwiftUI
 import SwiftData
 
 @main
 struct LSP_Time_ClockApp: App {
+    @State private var coordinator = AppCoordinator()
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            Employee.self,
+            PunchLog.self,
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            return try ModelContainer(for: schema, configurations: [configuration])
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
@@ -26,6 +26,7 @@ struct LSP_Time_ClockApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(coordinator)
         }
         .modelContainer(sharedModelContainer)
     }
