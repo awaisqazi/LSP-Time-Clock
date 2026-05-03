@@ -3,6 +3,7 @@ import SwiftData
 
 struct ContentView: View {
     @Environment(AppCoordinator.self) private var coordinator
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
@@ -16,6 +17,9 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.25), value: modeKey(coordinator.mode))
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
         .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
+        .onChange(of: scenePhase) { _, phase in
+            coordinator.handleScenePhaseChange(phase)
+        }
     }
 
     @ViewBuilder
@@ -37,6 +41,8 @@ struct ContentView: View {
             AdminDashboardView()
         case .adminEmployeeDetail(let id):
             EmployeeDetailView(employeeID: id)
+        case .bulkOnboarding:
+            BulkOnboardingView()
         }
     }
 
@@ -106,6 +112,7 @@ struct ContentView: View {
         case .adminPIN: "adminPIN"
         case .admin: "admin"
         case .adminEmployeeDetail(let id): "admin.detail.\(id)"
+        case .bulkOnboarding: "bulkOnboarding"
         }
     }
 }

@@ -2,20 +2,36 @@ import SwiftUI
 import SwiftData
 import PhotosUI
 
-struct RegistrationView: View {
+/// Sheet presented from `EmployeeDetailView` for editing an existing
+/// instructor's name, email, and profile photo. Saving requires re-entry
+/// of the admin PIN — the dashboard is already unlocked, but mutating an
+/// existing record is still treated as a privileged action.
+///
+/// RFID assignment is intentionally NOT exposed here; the "Replace Lost
+/// Card" flow on the detail view handles that with its own fee-collection
+/// confirmation.
+struct EmployeeEditView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(AppCoordinator.self) private var coordinator
     @Environment(\.modelContext) private var modelContext
     @Environment(\.horizontalSizeClass) private var hSizeClass
 
-    let rfidTag: String
+    let employee: Employee
 
-    @State private var firstName = ""
-    @State private var lastName = ""
-    @State private var email = ""
+    @State private var firstName: String = ""
+    @State private var lastName: String = ""
+    @State private var email: String = ""
+
+    /// Set only when the admin picks a new image; nil means "keep the
+    /// employee's existing photo". This lets us avoid rewriting the photo
+    /// file on every save and avoid a flaky "is the displayed image the
+    /// stored one or a fresh pick?" check.
+    @State private var newImage: UIImage?
     @State private var pickedItem: PhotosPickerItem?
-    @State private var selectedImage: UIImage?
     @State private var showingCamera = false
     @State private var showingPhotosPicker = false
+
+    @State private var askingPIN = false
     @State private var saveError: String?
 
     @FocusState private var focused: Field?
@@ -24,84 +40,79 @@ struct RegistrationView: View {
 
     private var isCompact: Bool { hSizeClass == .compact }
 
+    private var trimmedFirst: String { firstName.trimmingCharacters(in: .whitespaces) }
+    private var trimmedLast: String { lastName.trimmingCharacters(in: .whitespaces) }
+    private var trimmedEmail: String { email.trimmingCharacters(in: .whitespaces).lowercased() }
+
     private var canSave: Bool {
-        selectedImage != nil &&
-        !firstName.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !lastName.trimmingCharacters(in: .whitespaces).isEmpty &&
-        isValidEmail(email)
+        !trimmedFirst.isEmpty &&
+        !trimmedLast.isEmpty &&
+        isValidEmail(trimmedEmail) &&
+        hasChanges
+    }
+
+    private var hasChanges: Bool {
+        trimmedFirst != employee.firstName ||
+        trimmedLast != employee.lastName ||
+        trimmedEmail != employee.email ||
+        newImage != nil
     }
 
     var body: some View {
-        ZStack {
-            Theme.backgroundGradient.ignoresSafeArea()
+        NavigationStack {
+            ZStack {
+                Theme.backgroundGradient.ignoresSafeArea()
 
-            ScrollView {
-                VStack(spacing: isCompact ? 20 : 24) {
-                    header
+                ScrollView {
+                    VStack(spacing: isCompact ? 18 : 24) {
+                        photoSection
 
-                    photoSection
-
-                    VStack(spacing: isCompact ? 12 : 16) {
-                        textField("First name", text: $firstName, field: .first)
-                        textField("Last name", text: $lastName, field: .last)
-                        textField("Email", text: $email, field: .email, keyboard: .emailAddress)
-                    }
-                    .card()
-
-                    if isCompact {
-                        VStack(spacing: 12) {
-                            Button(action: save) {
-                                Text("Save & Continue")
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.7)
-                            }
-                            .buttonStyle(PrimaryButtonStyle())
-                            .disabled(!canSave)
-                            .opacity(canSave ? 1 : 0.5)
-
-                            Button(role: .cancel) {
-                                coordinator.goHome()
-                            } label: { Text("Cancel") }
-                            .buttonStyle(SecondaryButtonStyle())
+                        VStack(spacing: isCompact ? 12 : 16) {
+                            textField("First name", text: $firstName, field: .first)
+                            textField("Last name", text: $lastName, field: .last)
+                            textField("Email", text: $email, field: .email, keyboard: .emailAddress)
                         }
-                    } else {
-                        HStack(spacing: 16) {
-                            Button(role: .cancel) {
-                                coordinator.goHome()
-                            } label: { Text("Cancel") }
-                            .buttonStyle(SecondaryButtonStyle())
+                        .card()
 
-                            Button(action: save) {
-                                Text("Save & Continue")
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.7)
-                            }
-                            .buttonStyle(PrimaryButtonStyle())
-                            .disabled(!canSave)
-                            .opacity(canSave ? 1 : 0.5)
+                        if let saveError {
+                            Text(saveError)
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(Theme.danger)
                         }
                     }
-
-                    if let saveError {
-                        Text(saveError)
-                            .font(.footnote.weight(.medium))
-                            .foregroundStyle(Theme.danger)
-                    }
+                    .padding(isCompact ? 16 : 24)
+                    .frame(maxWidth: 720)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(isCompact ? 16 : 24)
-                .frame(maxWidth: 720)
-                .frame(maxWidth: .infinity)
+                .scrollDismissesKeyboard(.interactively)
             }
-            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle("Edit Instructor")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        focused = nil
+                        askingPIN = true
+                    }
+                    .disabled(!canSave)
+                }
+            }
+        }
+        .onAppear {
+            firstName = employee.firstName
+            lastName = employee.lastName
+            email = employee.email
         }
         .onChange(of: pickedItem) { _, newItem in
             Task { await loadPicked(newItem) }
         }
-        .onTapGesture { coordinator.userActivity() }
         .fullScreenCover(isPresented: $showingCamera) {
             CameraCaptureView(
                 onCapture: { img in
-                    selectedImage = img
+                    newImage = img
                     showingCamera = false
                     coordinator.setPresentingSystemModal(false)
                 },
@@ -123,38 +134,22 @@ struct RegistrationView: View {
                 coordinator.setPresentingSystemModal(false)
             }
         }
-    }
-
-    // MARK: Sections
-
-    private var header: some View {
-        VStack(spacing: isCompact ? 8 : 10) {
-            Image(systemName: "person.crop.circle.badge.plus")
-                .font(.system(size: isCompact ? 38 : 44, weight: .black))
-                .foregroundStyle(Theme.brandGradient)
-
-            Text("Card not found")
-                .font(.system(size: isCompact ? 24 : 28, weight: .black, design: .rounded))
-                .foregroundStyle(Theme.text)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-
-            Text("Register this card to an instructor")
-                .font(.system(size: isCompact ? 14 : 15, weight: .medium, design: .rounded))
-                .foregroundStyle(Theme.textMuted)
-                .multilineTextAlignment(.center)
-
-            Text(rfidTag)
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                .tracking(3)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(Theme.tan.opacity(0.2)))
-                .foregroundStyle(Theme.textMuted)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+        .sheet(isPresented: $askingPIN) {
+            PINConfirmationView(
+                title: "Confirm Edits",
+                subtitle: "Enter the admin PIN to save changes for \(employee.fullName).",
+                onSuccess: {
+                    askingPIN = false
+                    commitSave()
+                },
+                onCancel: {
+                    askingPIN = false
+                }
+            )
         }
     }
+
+    // MARK: - Sections
 
     private var photoSection: some View {
         let size: CGFloat = isCompact ? 140 : 170
@@ -169,8 +164,8 @@ struct RegistrationView: View {
                     )
                     .frame(width: size, height: size)
 
-                if let img = selectedImage {
-                    Image(uiImage: img)
+                if let displayed = displayedImage {
+                    Image(uiImage: displayed)
                         .resizable()
                         .scaledToFill()
                         .frame(width: size, height: size)
@@ -198,11 +193,6 @@ struct RegistrationView: View {
                 .buttonStyle(SecondaryButtonStyle())
 
                 Button {
-                    // Programmatic presentation guarantees the modal flag
-                    // is set in the same synchronous step, before scenePhase
-                    // flips to .inactive on iPad. (PhotosPicker's own button
-                    // races simultaneousGesture and would cause the kiosk
-                    // lock to fire while the picker was opening.)
                     coordinator.setPresentingSystemModal(true)
                     showingPhotosPicker = true
                 } label: {
@@ -213,6 +203,11 @@ struct RegistrationView: View {
                 .buttonStyle(SecondaryButtonStyle())
             }
         }
+    }
+
+    private var displayedImage: UIImage? {
+        if let newImage { return newImage }
+        return PhotoStorage.load(fileName: employee.photoFileName)
     }
 
     private func textField(
@@ -250,13 +245,11 @@ struct RegistrationView: View {
         switch field {
         case .first: focused = .last
         case .last:  focused = .email
-        case .email:
-            focused = nil
-            if canSave { save() }
+        case .email: focused = nil
         }
     }
 
-    // MARK: Data
+    // MARK: - Save flow
 
     private func loadPicked(_ item: PhotosPickerItem?) async {
         defer {
@@ -265,36 +258,60 @@ struct RegistrationView: View {
         guard let item else { return }
         if let data = try? await item.loadTransferable(type: Data.self),
            let ui = UIImage(data: data) {
-            await MainActor.run { selectedImage = ui }
+            await MainActor.run { newImage = ui }
         }
     }
 
-    private func save() {
-        guard canSave, let image = selectedImage else { return }
-        coordinator.userActivity()
+    private func commitSave() {
+        guard canSave else { return }
+
+        // Detect email collisions with another instructor (model doesn't
+        // enforce uniqueness on email, so we have to check ourselves).
+        if trimmedEmail != employee.email,
+           let conflict = findEmployee(byEmail: trimmedEmail),
+           conflict.id != employee.id {
+            saveError = "Another instructor already uses \(trimmedEmail)."
+            Feedback.error()
+            return
+        }
 
         do {
-            let photoFileName = try PhotoStorage.save(image)
-            let employee = Employee(
-                rfidTag: rfidTag,
-                firstName: firstName.trimmingCharacters(in: .whitespaces),
-                lastName: lastName.trimmingCharacters(in: .whitespaces),
-                email: email.trimmingCharacters(in: .whitespaces).lowercased(),
-                photoFileName: photoFileName
-            )
-            modelContext.insert(employee)
+            // Apply the photo first so we can roll back the file on failure.
+            var newPhotoFileName: String?
+            if let image = newImage {
+                newPhotoFileName = try PhotoStorage.save(image)
+            }
 
-            let log = PunchLog(employee: employee, clockInTime: Date())
-            modelContext.insert(log)
-            employee.isCurrentlyClockedIn = true
+            let oldPhoto = employee.photoFileName
+            employee.firstName = trimmedFirst
+            employee.lastName = trimmedLast
+            employee.email = trimmedEmail
+            if let newPhotoFileName {
+                employee.photoFileName = newPhotoFileName
+            }
 
             try modelContext.save()
+
+            // Once SwiftData has the new value committed, prune the orphan.
+            if let newPhotoFileName, !oldPhoto.isEmpty, oldPhoto != newPhotoFileName {
+                PhotoStorage.delete(fileName: oldPhoto)
+            }
+
             Feedback.success()
-            coordinator.go(to: .punchSuccess(name: employee.fullName, didClockIn: true))
+            coordinator.showToast("Changes saved.", style: .success)
+            dismiss()
         } catch {
             saveError = error.localizedDescription
             Feedback.error()
         }
+    }
+
+    private func findEmployee(byEmail email: String) -> Employee? {
+        var descriptor = FetchDescriptor<Employee>(
+            predicate: #Predicate { $0.email == email }
+        )
+        descriptor.fetchLimit = 1
+        return (try? modelContext.fetch(descriptor))?.first
     }
 
     private func isValidEmail(_ value: String) -> Bool {

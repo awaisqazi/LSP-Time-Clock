@@ -11,6 +11,7 @@ struct EmployeeDetailView: View {
     @State private var employee: Employee?
     @State private var showingReplaceConfirm = false
     @State private var showingDeleteConfirm = false
+    @State private var showingEdit = false
 
     private var isCompact: Bool { hSizeClass == .compact }
 
@@ -39,6 +40,11 @@ struct EmployeeDetailView: View {
         }
         .onAppear { employee = EmployeeLookup.byID(employeeID, in: modelContext) }
         .onTapGesture { coordinator.userActivity() }
+        .sheet(isPresented: $showingEdit) {
+            if let employee {
+                EmployeeEditView(employee: employee)
+            }
+        }
         .alert("Has the lost card fee been collected?", isPresented: $showingReplaceConfirm) {
             Button("Cancel", role: .cancel) { }
             Button("Yes — Scan New Card") {
@@ -193,13 +199,22 @@ struct EmployeeDetailView: View {
     private func actions(for employee: Employee) -> some View {
         VStack(spacing: 12) {
             Button {
+                showingEdit = true
+            } label: {
+                Label("Edit Profile", systemImage: "pencil")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .buttonStyle(PrimaryButtonStyle())
+
+            Button {
                 showingReplaceConfirm = true
             } label: {
                 Label("Replace Lost Card", systemImage: "creditcard.trianglebadge.exclamationmark")
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
-            .buttonStyle(PrimaryButtonStyle())
+            .buttonStyle(SecondaryButtonStyle())
 
             Button(role: .destructive) {
                 showingDeleteConfirm = true
