@@ -21,6 +21,9 @@ struct EmployeeEditView: View {
     @State private var firstName: String = ""
     @State private var lastName: String = ""
     @State private var email: String = ""
+    @State private var role: String = ""
+    @State private var pin: String = ""
+    @State private var isActive: Bool = true
 
     /// Set only when the admin picks a new image; nil means "keep the
     /// employee's existing photo". This lets us avoid rewriting the photo
@@ -36,18 +39,21 @@ struct EmployeeEditView: View {
 
     @FocusState private var focused: Field?
 
-    enum Field: Hashable { case first, last, email }
+    enum Field: Hashable { case first, last, email, role, pin }
 
     private var isCompact: Bool { hSizeClass == .compact }
 
     private var trimmedFirst: String { firstName.trimmingCharacters(in: .whitespaces) }
     private var trimmedLast: String { lastName.trimmingCharacters(in: .whitespaces) }
     private var trimmedEmail: String { email.trimmingCharacters(in: .whitespaces).lowercased() }
+    private var trimmedRole: String { role.trimmingCharacters(in: .whitespaces) }
+    private var trimmedPIN: String { pin.trimmingCharacters(in: .whitespaces) }
 
     private var canSave: Bool {
         !trimmedFirst.isEmpty &&
         !trimmedLast.isEmpty &&
         isValidEmail(trimmedEmail) &&
+        isValidPIN(trimmedPIN) &&
         hasChanges
     }
 
@@ -55,7 +61,17 @@ struct EmployeeEditView: View {
         trimmedFirst != employee.firstName ||
         trimmedLast != employee.lastName ||
         trimmedEmail != employee.email ||
+        trimmedRole != employee.role ||
+        trimmedPIN != employee.pin ||
+        isActive != employee.isActive ||
         newImage != nil
+    }
+
+    private func isValidPIN(_ value: String) -> Bool {
+        // Empty PIN is allowed (means "not assigned"). Otherwise it has to
+        // be 4 digits to match the kiosk's existing PIN entry pad.
+        if value.isEmpty { return true }
+        return value.count == 4 && value.allSatisfy(\.isNumber)
     }
 
     var body: some View {
@@ -71,6 +87,31 @@ struct EmployeeEditView: View {
                             textField("First name", text: $firstName, field: .first)
                             textField("Last name", text: $lastName, field: .last)
                             textField("Email", text: $email, field: .email, keyboard: .emailAddress)
+                        }
+                        .card()
+
+                        VStack(spacing: isCompact ? 12 : 16) {
+                            textField("Role", text: $role, field: .role)
+                            textField("PIN (4 digits, optional)", text: $pin, field: .pin, keyboard: .numberPad)
+
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("ACTIVE")
+                                        .font(.system(size: 11, weight: .heavy, design: .rounded))
+                                        .tracking(2)
+                                        .foregroundStyle(Theme.textFaint)
+                                    Text(isActive
+                                         ? "Visible in roster, can clock in."
+                                         : "Hidden from active roster, history kept.")
+                                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                                        .foregroundStyle(Theme.textMuted)
+                                }
+                                Spacer()
+                                Toggle("", isOn: $isActive)
+                                    .labelsHidden()
+                                    .tint(Theme.success)
+                            }
+                            .padding(.vertical, 6)
                         }
                         .card()
 
@@ -105,6 +146,9 @@ struct EmployeeEditView: View {
             firstName = employee.firstName
             lastName = employee.lastName
             email = employee.email
+            role = employee.role
+            pin = employee.pin
+            isActive = employee.isActive
         }
         .onChange(of: pickedItem) { _, newItem in
             Task { await loadPicked(newItem) }
@@ -224,9 +268,9 @@ struct EmployeeEditView: View {
             TextField("", text: text)
                 .focused($focused, equals: field)
                 .keyboardType(keyboard)
-                .autocorrectionDisabled(field == .email)
-                .textInputAutocapitalization(field == .email ? .never : .words)
-                .submitLabel(field == .email ? .done : .next)
+                .autocorrectionDisabled(field == .email || field == .pin)
+                .textInputAutocapitalization((field == .email || field == .pin) ? .never : .words)
+                .submitLabel(field == .pin ? .done : .next)
                 .onSubmit { advanceFocus(from: field) }
                 .font(.system(size: isCompact ? 18 : 22, weight: .semibold, design: .rounded))
                 .foregroundStyle(Theme.text)
@@ -245,7 +289,9 @@ struct EmployeeEditView: View {
         switch field {
         case .first: focused = .last
         case .last:  focused = .email
-        case .email: focused = nil
+        case .email: focused = .role
+        case .role:  focused = .pin
+        case .pin:   focused = nil
         }
     }
 
@@ -286,6 +332,18 @@ struct EmployeeEditView: View {
             employee.firstName = trimmedFirst
             employee.lastName = trimmedLast
             employee.email = trimmedEmail
+            employee.role = trimmedRole
+            employee.pin = trimmedPIN
+            // If the admin is deactivating someone who's currently on the
+            // clock, close their open shift so payroll isn't left dangling.
+            if employee.isActive && !isActive, employee.isCurrentlyClockedIn {
+                if let open = employee.punchLogs.filter(\.isOpen).max(by: { $0.clockInTime < $1.clockInTime }) {
+                    open.clockOutTime = .now
+                    open.wasForcedOut = true
+                }
+                employee.isCurrentlyClockedIn = false
+            }
+            employee.isActive = isActive
             if let newPhotoFileName {
                 employee.photoFileName = newPhotoFileName
             }

@@ -96,15 +96,25 @@ final class AppCoordinator {
         resetTask?.cancel()
         resetTask = nil
 
-        // Don't auto-reset while admin is actively running the bulk
-        // onboarding queue, or while a system modal is presented (the user
+        // Don't auto-reset while a system modal is presented (the user
         // could be browsing the photo library for longer than 30s).
         if isPresentingSystemModal { return }
 
         let needs: Bool
         switch mode {
-        case .idle, .punchSuccess, .bulkOnboarding: needs = false
-        default: needs = true
+        // Idle states: no timer needed (already at the destination).
+        case .idle, .punchSuccess:
+            needs = false
+        // Admin sessions: kiosk should stay open until the admin
+        // explicitly locks via the Lock button or the scene ends
+        // (app backgrounded / device locked). `handleScenePhaseChange`
+        // takes care of the latter.
+        case .admin, .adminEmployeeDetail, .bulkOnboarding:
+            needs = false
+        // Customer-facing kiosk states: reset after inactivity so the
+        // next person walking up sees a clean Idle screen.
+        case .scanning, .registering, .verifying, .adminPIN:
+            needs = true
         }
         guard needs else { return }
 

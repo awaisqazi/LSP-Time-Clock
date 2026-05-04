@@ -41,6 +41,70 @@ enum CSVExporter {
         return url
     }
 
+    // MARK: - Roster Export
+
+    /// Roster CSV with the columns admins use for HRIS imports / payroll
+    /// onboarding: name, RFID card #, PIN, role, status. Pending-onboarding
+    /// employees show a blank RFID column rather than the internal sentinel.
+    static func rosterCSV(_ employees: [Employee]) -> String {
+        let header = "Full Name,Email,RFID Card,PIN,Role,Status\n"
+        let sorted = employees.sorted { $0.fullName.lowercased() < $1.fullName.lowercased() }
+        var body = ""
+        for emp in sorted {
+            let card = emp.hasAssignedCard ? emp.rfidTag : ""
+            let status = emp.isActive ? "Active" : "Inactive"
+            body += [
+                escape(emp.fullName),
+                escape(emp.email),
+                escape(card),
+                escape(emp.pin),
+                escape(emp.role),
+                status
+            ].joined(separator: ",") + "\n"
+        }
+        return header + body
+    }
+
+    // MARK: - Timesheet Export (Date Range)
+
+    /// Timesheet CSV scoped to a date range. Each row is one shift with the
+    /// total hours pre-computed in **decimal hours** so a payroll import
+    /// can multiply directly by an hourly rate (e.g. `1.50` not `1:30`).
+    /// Open shifts (no clock-out) are included with a blank Clock Out and
+    /// blank Total Hours so they're visible to whoever is doing payroll.
+    static func timesheetCSV(_ logs: [PunchLog], from start: Date, to end: Date) -> String {
+        let header = "Date,Employee,Email,Role,Clock In,Clock Out,Total Hours,Forced Out\n"
+        let dateOnly = DateFormatter()
+        dateOnly.dateFormat = "yyyy-MM-dd"
+        let dateTime = DateFormatter()
+        dateTime.dateFormat = "yyyy-MM-dd HH:mm"
+
+        let inRange = logs
+            .filter { $0.clockInTime >= start && $0.clockInTime <= end }
+            .sorted { $0.clockInTime < $1.clockInTime }
+
+        var body = ""
+        for log in inRange {
+            let name = log.employee?.fullName ?? "—"
+            let email = log.employee?.email ?? ""
+            let role = log.employee?.role ?? ""
+            let hours = log.totalHours.map { String(format: "%.2f", $0) } ?? ""
+            let outStr = log.clockOutTime.map(dateTime.string(from:)) ?? ""
+            let forced = log.wasForcedOut ? "true" : "false"
+            body += [
+                dateOnly.string(from: log.clockInTime),
+                escape(name),
+                escape(email),
+                escape(role),
+                dateTime.string(from: log.clockInTime),
+                outStr,
+                hours,
+                forced
+            ].joined(separator: ",") + "\n"
+        }
+        return header + body
+    }
+
     // MARK: - Bulk Import Template
 
     /// Blank template the admin can fill in and re-upload to bulk-create

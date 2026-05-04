@@ -12,6 +12,12 @@ final class Employee {
     var isCurrentlyClockedIn: Bool
     var createdAt: Date
 
+    // New fields — all have stored-property defaults so SwiftData performs
+    // a lightweight migration on existing stores without data loss.
+    var pin: String = ""
+    var role: String = ""
+    var isActive: Bool = true
+
     @Relationship(deleteRule: .cascade, inverse: \PunchLog.employee)
     var punchLogs: [PunchLog] = []
 
@@ -20,7 +26,10 @@ final class Employee {
         firstName: String,
         lastName: String,
         email: String,
-        photoFileName: String
+        photoFileName: String,
+        pin: String = "",
+        role: String = "",
+        isActive: Bool = true
     ) {
         self.id = UUID()
         self.rfidTag = rfidTag
@@ -30,9 +39,19 @@ final class Employee {
         self.photoFileName = photoFileName
         self.isCurrentlyClockedIn = false
         self.createdAt = Date()
+        self.pin = pin
+        self.role = role
+        self.isActive = isActive
     }
 
     var fullName: String { "\(firstName) \(lastName)" }
+
+    /// Display string for the roster — falls back to email when the name
+    /// hasn't been filled in yet (e.g., for placeholder bulk-import rows).
+    var displayName: String {
+        let trimmed = fullName.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? email : trimmed
+    }
 
     // MARK: - Bulk-onboarding sentinel
 
@@ -42,8 +61,6 @@ final class Employee {
     /// collide with this prefix (which contains a `:`).
     static let pendingTagPrefix = "PENDING:"
 
-    /// Generates a unique placeholder tag that satisfies the `@Attribute(.unique)`
-    /// constraint while the employee waits for an RFID assignment.
     static func makePendingTag() -> String {
         "\(pendingTagPrefix)\(UUID().uuidString)"
     }

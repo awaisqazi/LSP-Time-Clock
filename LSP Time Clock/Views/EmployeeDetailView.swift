@@ -10,8 +10,11 @@ struct EmployeeDetailView: View {
 
     @State private var employee: Employee?
     @State private var showingReplaceConfirm = false
-    @State private var showingDeleteConfirm = false
+    @State private var showingDeactivateConfirm = false
+    @State private var showingActivateConfirm = false
     @State private var showingEdit = false
+    @State private var showingAddPunch = false
+    @State private var editingPunch: PunchLog?
 
     private var isCompact: Bool { hSizeClass == .compact }
 
@@ -45,6 +48,14 @@ struct EmployeeDetailView: View {
                 EmployeeEditView(employee: employee)
             }
         }
+        .sheet(isPresented: $showingAddPunch) {
+            if let employee {
+                ManualPunchAddView(prefilledEmployee: employee)
+            }
+        }
+        .sheet(item: $editingPunch) { log in
+            PunchLogEditView(log: log)
+        }
         .alert("Has the lost card fee been collected?", isPresented: $showingReplaceConfirm) {
             Button("Cancel", role: .cancel) { }
             Button("Yes — Scan New Card") {
@@ -53,11 +64,17 @@ struct EmployeeDetailView: View {
         } message: {
             Text("Scan the replacement card after collecting the fee. The new card will overwrite the instructor's current card tag.")
         }
-        .alert("Delete Instructor?", isPresented: $showingDeleteConfirm) {
+        .alert("Deactivate Instructor?", isPresented: $showingDeactivateConfirm) {
             Button("Cancel", role: .cancel) { }
-            Button("Delete", role: .destructive) { deleteEmployee() }
+            Button("Deactivate", role: .destructive) { deactivateEmployee() }
         } message: {
-            Text("This permanently removes the instructor and all of their punch history. This cannot be undone.")
+            Text("They will be hidden from the active roster and unable to clock in. Their punch history is preserved and they can be reactivated any time.")
+        }
+        .alert("Reactivate Instructor?", isPresented: $showingActivateConfirm) {
+            Button("Cancel", role: .cancel) { }
+            Button("Reactivate") { activateEmployee() }
+        } message: {
+            Text("They will reappear on the active roster and can clock in with their card.")
         }
     }
 
@@ -216,15 +233,27 @@ struct EmployeeDetailView: View {
             }
             .buttonStyle(SecondaryButtonStyle())
 
-            Button(role: .destructive) {
-                showingDeleteConfirm = true
-            } label: {
-                Label("Delete Instructor", systemImage: "trash")
-                    .foregroundStyle(Theme.danger)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+            if employee.isActive {
+                Button(role: .destructive) {
+                    showingDeactivateConfirm = true
+                } label: {
+                    Label("Deactivate Instructor", systemImage: "person.fill.xmark")
+                        .foregroundStyle(Theme.danger)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            } else {
+                Button {
+                    showingActivateConfirm = true
+                } label: {
+                    Label("Reactivate Instructor", systemImage: "person.fill.checkmark")
+                        .foregroundStyle(Theme.success)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .buttonStyle(SecondaryButtonStyle())
             }
-            .buttonStyle(SecondaryButtonStyle())
         }
     }
 
@@ -233,7 +262,7 @@ struct EmployeeDetailView: View {
         let totalHours = sorted.compactMap { $0.totalHours }.reduce(0, +)
 
         return VStack(alignment: .leading, spacing: 14) {
-            HStack {
+            HStack(spacing: 10) {
                 Text("Punch History")
                     .font(.system(size: isCompact ? 18 : 20, weight: .heavy, design: .rounded))
                     .foregroundStyle(Theme.text)
@@ -241,6 +270,19 @@ struct EmployeeDetailView: View {
                 Text(String(format: "%.1f hrs total", totalHours))
                     .font(.system(size: isCompact ? 12 : 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(Theme.textMuted)
+
+                Button {
+                    showingAddPunch = true
+                } label: {
+                    Label("Add", systemImage: "plus.circle.fill")
+                        .labelStyle(.titleAndIcon)
+                        .font(.system(size: isCompact ? 12 : 13, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Theme.text)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(Theme.gold))
+                }
+                .buttonStyle(.plain)
             }
 
             if sorted.isEmpty {
@@ -252,7 +294,12 @@ struct EmployeeDetailView: View {
             } else {
                 VStack(spacing: 8) {
                     ForEach(sorted) { log in
-                        punchRow(log)
+                        Button {
+                            editingPunch = log
+                        } label: {
+                            punchRow(log)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -313,6 +360,11 @@ struct EmployeeDetailView: View {
                         .foregroundStyle(Theme.text)
                 }
             }
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Theme.textFaint)
+                .padding(.leading, 4)
         }
         .padding(.horizontal, isCompact ? 10 : 14)
         .padding(.vertical, isCompact ? 10 : 12)
@@ -320,16 +372,34 @@ struct EmployeeDetailView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Theme.cream.opacity(0.7))
         )
+        .contentShape(Rectangle())
     }
 
-    private func deleteEmployee() {
+    private func deactivateEmployee() {
         guard let employee else { return }
-        let photo = employee.photoFileName
-        modelContext.delete(employee)
+        // If they're on the clock when deactivated, close the open shift
+        // so it doesn't sit dangling in payroll exports forever.
+        if employee.isCurrentlyClockedIn,
+           let open = employee.punchLogs.filter(\.isOpen).max(by: { $0.clockInTime < $1.clockInTime }) {
+            open.clockOutTime = .now
+            open.wasForcedOut = true
+            employee.isCurrentlyClockedIn = false
+        }
+        employee.isActive = false
         try? modelContext.save()
-        PhotoStorage.delete(fileName: photo)
         Feedback.success()
-        coordinator.showToast("Instructor deleted.", style: .success)
-        coordinator.go(to: .admin)
+        coordinator.showToast("\(employee.displayName) deactivated.", style: .success)
+        // Re-bind the local state so the UI flips to "Reactivate" without
+        // a navigation pop. The @Model object is the same instance.
+        self.employee = employee
+    }
+
+    private func activateEmployee() {
+        guard let employee else { return }
+        employee.isActive = true
+        try? modelContext.save()
+        Feedback.success()
+        coordinator.showToast("\(employee.displayName) reactivated.", style: .success)
+        self.employee = employee
     }
 }
