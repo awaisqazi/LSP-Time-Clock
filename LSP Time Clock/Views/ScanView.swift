@@ -5,11 +5,20 @@ struct ScanView: View {
     @Environment(AppCoordinator.self) private var coordinator
     @Environment(\.modelContext) private var modelContext
     @Environment(\.horizontalSizeClass) private var hSizeClass
+    @Environment(\.scenePhase) private var scenePhase
 
     let purpose: ScanPurpose
 
     @State private var isFieldActive = true
     @State private var pulse = false
+    /// Bumped every time we want HiddenRFIDField to perform a fresh
+    /// resign+become first-responder cycle. Critical for recovering
+    /// scanner input after the iPad has slept overnight: iOS sometimes
+    /// keeps the field's `isFirstResponder` flag set while the actual
+    /// keyboard input pipeline is detached, so just toggling `isActive`
+    /// isn't enough — we need to force iOS to re-grant focus.
+    @State private var refocusGeneration: Int = 0
+    @State private var showingTroubleshooting = false
 
     private var isCompact: Bool { hSizeClass == .compact }
 
@@ -96,31 +105,91 @@ struct ScanView: View {
                     }
                     .buttonStyle(SecondaryButtonStyle())
                     .frame(maxWidth: 300)
+                    .padding(.bottom, 4)
+
+                    Button {
+                        // Mark the troubleshooting sheet as a "system
+                        // modal" so the 30s scan-screen auto-reset
+                        // doesn't kick the kiosk back to Idle while the
+                        // user is mid-video. The flag is cleared in the
+                        // sheet's onDismiss.
+                        coordinator.setPresentingSystemModal(true)
+                        showingTroubleshooting = true
+                        coordinator.userActivity()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "questionmark.circle.fill")
+                                .font(.system(size: 15, weight: .bold))
+                            Text("Having trouble?")
+                                .font(.system(size: 14, weight: .heavy, design: .rounded))
+                        }
+                        .foregroundStyle(Theme.textMuted)
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 18)
+                        .background(
+                            Capsule()
+                                .fill(Theme.surface)
+                                .overlay(
+                                    Capsule().stroke(Theme.surfaceStroke, lineWidth: 1)
+                                )
+                                .shadow(color: Theme.tan.opacity(0.12), radius: 6, y: 2)
+                        )
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
                     .padding(.bottom, isCompact ? 16 : 24)
                 }
                 .padding(.horizontal, hPad)
 
-                HiddenRFIDField(isActive: $isFieldActive) { scanned in
+                HiddenRFIDField(
+                    isActive: $isFieldActive,
+                    refocusGeneration: refocusGeneration
+                ) { scanned in
                     handleScan(scanned)
                 }
                 .frame(width: 1, height: 1)
                 .opacity(0)
                 .allowsHitTesting(false)
             }
+            // Full-screen, invisible tap target. Every tap forces a fresh
+            // focus grant on the hidden field — useful when iOS has
+            // detached the input pipeline while the device slept.
             .contentShape(Rectangle())
             .onTapGesture {
-                isFieldActive = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    isFieldActive = true
-                }
+                forceRefocus()
                 coordinator.userActivity()
             }
         }
         .onAppear {
             pulse = true
             isFieldActive = true
+            forceRefocus()
         }
         .onDisappear { isFieldActive = false }
+        .onChange(of: scenePhase) { _, phase in
+            // Recover input after the iPad has been backgrounded or
+            // asleep — the most common cause of "scanner beeps but the
+            // app shows nothing" after an overnight idle.
+            if phase == .active {
+                isFieldActive = true
+                forceRefocus()
+            }
+        }
+        .sheet(isPresented: $showingTroubleshooting, onDismiss: {
+            // Restore the auto-reset timer and reclaim first responder
+            // (the sheet briefly steals it during dismissal).
+            coordinator.setPresentingSystemModal(false)
+            forceRefocus()
+        }) {
+            TroubleshootingView()
+        }
+    }
+
+    /// Bumps the refocus counter so HiddenRFIDField forces a clean
+    /// resign+become cycle on its underlying UITextField.
+    private func forceRefocus() {
+        isFieldActive = true
+        refocusGeneration &+= 1  // wraps cleanly on overflow
     }
 
     private func handleScan(_ raw: String) {
@@ -161,6 +230,7 @@ struct ScanView: View {
             return
         }
         target.rfidTag = newTag
+        target.markDirty()
         try? modelContext.save()
         Feedback.success()
         coordinator.showToast("Card replaced for \(target.fullName).", style: .success)

@@ -99,6 +99,7 @@ struct AdminDashboardView: View {
         case .roster:     AdminRosterView()
         case .timesheets: AdminTimesheetsView()
         case .audit:      AdminAuditView()
+        case .sync:       AdminSyncView()
         }
     }
 }
@@ -108,6 +109,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
     case roster
     case timesheets
     case audit
+    case sync
 
     var id: String { rawValue }
 
@@ -117,6 +119,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .roster:     "Roster"
         case .timesheets: "Timesheets"
         case .audit:      "Audit"
+        case .sync:       "Cloud Sync"
         }
     }
 
@@ -126,6 +129,7 @@ enum AdminSection: String, CaseIterable, Identifiable, Hashable {
         case .roster:     "person.2.fill"
         case .timesheets: "calendar"
         case .audit:      "exclamationmark.triangle.fill"
+        case .sync:       "arrow.triangle.2.circlepath.icloud"
         }
     }
 }

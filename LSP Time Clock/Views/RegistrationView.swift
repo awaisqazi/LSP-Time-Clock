@@ -12,6 +12,7 @@ struct RegistrationView: View {
     @State private var firstName = ""
     @State private var lastName = ""
     @State private var email = ""
+    @State private var profileRole: EmployeeRole = .instructor
     @State private var pickedItem: PhotosPickerItem?
     @State private var selectedImage: UIImage?
     @State private var showingCamera = false
@@ -25,7 +26,8 @@ struct RegistrationView: View {
     private var isCompact: Bool { hSizeClass == .compact }
 
     private var canSave: Bool {
-        selectedImage != nil &&
+        // Photo is optional — matches the bulk-onboarding flow, where the
+        // admin can fill in a photo later from the dashboard.
         !firstName.trimmingCharacters(in: .whitespaces).isEmpty &&
         !lastName.trimmingCharacters(in: .whitespaces).isEmpty &&
         isValidEmail(email)
@@ -45,6 +47,7 @@ struct RegistrationView: View {
                         textField("First name", text: $firstName, field: .first)
                         textField("Last name", text: $lastName, field: .last)
                         textField("Email", text: $email, field: .email, keyboard: .emailAddress)
+                        rolePicker
                     }
                     .card()
 
@@ -160,6 +163,16 @@ struct RegistrationView: View {
         let size: CGFloat = isCompact ? 140 : 170
 
         return VStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Text("PHOTO")
+                    .font(.system(size: 11, weight: .heavy, design: .rounded))
+                    .tracking(2)
+                    .foregroundStyle(Theme.textFaint)
+                Text("(optional)")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Theme.textFaint)
+            }
+
             ZStack {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .fill(Theme.surface)
@@ -212,6 +225,21 @@ struct RegistrationView: View {
                 }
                 .buttonStyle(SecondaryButtonStyle())
             }
+        }
+    }
+
+    private var rolePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("ROLE")
+                .font(.system(size: 11, weight: .heavy, design: .rounded))
+                .tracking(2)
+                .foregroundStyle(Theme.textFaint)
+            Picker("Role", selection: $profileRole) {
+                ForEach(EmployeeRole.allCases) { role in
+                    Text(role.displayName).tag(role)
+                }
+            }
+            .pickerStyle(.segmented)
         }
     }
 
@@ -270,23 +298,47 @@ struct RegistrationView: View {
     }
 
     private func save() {
-        guard canSave, let image = selectedImage else { return }
+        guard canSave else { return }
         coordinator.userActivity()
 
         do {
-            let photoFileName = try PhotoStorage.save(image)
+            // Photo is optional. When omitted we store an empty file
+            // name; the rest of the app already treats that as "no
+            // photo" and falls back to the placeholder avatar.
+            let photoFileName: String
+            if let image = selectedImage {
+                photoFileName = try PhotoStorage.save(image)
+            } else {
+                photoFileName = ""
+            }
             let employee = Employee(
                 rfidTag: rfidTag,
                 firstName: firstName.trimmingCharacters(in: .whitespaces),
                 lastName: lastName.trimmingCharacters(in: .whitespaces),
                 email: email.trimmingCharacters(in: .whitespaces).lowercased(),
-                photoFileName: photoFileName
+                photoFileName: photoFileName,
+                profileRole: profileRole
             )
             modelContext.insert(employee)
 
-            let log = PunchLog(employee: employee, clockInTime: Date())
+            // Auto-clock-in for the freshly registered card. A "both"
+            // employee defaults to the instructor side because that's the
+            // overwhelmingly common case at the studio; the admin can flip
+            // the shift role and scheduled-class count from the punch-log
+            // editor if this happens to be a coordinator-only shift.
+            let initialShiftRole: ShiftRole = profileRole == .coordinator ? .coordinator : .instructor
+            let log = PunchLog(
+                employee: employee,
+                clockInTime: Date(),
+                shiftRole: initialShiftRole,
+                scheduledClasses: initialShiftRole == .instructor ? 1 : 0,
+                actualClassesTaught: 0
+            )
             modelContext.insert(log)
             employee.isCurrentlyClockedIn = true
+
+            employee.markDirty()
+            log.markDirty()
 
             try modelContext.save()
             Feedback.success()

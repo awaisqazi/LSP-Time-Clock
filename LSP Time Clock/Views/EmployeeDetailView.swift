@@ -12,9 +12,16 @@ struct EmployeeDetailView: View {
     @State private var showingReplaceConfirm = false
     @State private var showingDeactivateConfirm = false
     @State private var showingActivateConfirm = false
+    @State private var showingDeleteConfirm = false
     @State private var showingEdit = false
     @State private var showingAddPunch = false
     @State private var editingPunch: PunchLog?
+
+    /// Mirror of `employee.profileRole` so the segmented control has
+    /// something to bind to. We sync this from the model on appear and
+    /// write back through `updateProfileRole(_:)` whenever the admin
+    /// taps a different segment.
+    @State private var profileRoleSelection: EmployeeRole = .instructor
 
     private var isCompact: Bool { hSizeClass == .compact }
 
@@ -30,6 +37,8 @@ struct EmployeeDetailView: View {
                         VStack(spacing: isCompact ? 16 : 24) {
                             profileCard(for: employee)
 
+                            classificationCard(for: employee)
+
                             actions(for: employee)
 
                             historySection(for: employee)
@@ -41,9 +50,19 @@ struct EmployeeDetailView: View {
                 ProgressView().tint(Theme.text)
             }
         }
-        .onAppear { employee = EmployeeLookup.byID(employeeID, in: modelContext) }
+        .onAppear {
+            let loaded = EmployeeLookup.byID(employeeID, in: modelContext)
+            employee = loaded
+            profileRoleSelection = loaded?.profileRole ?? .instructor
+        }
         .onTapGesture { coordinator.userActivity() }
-        .sheet(isPresented: $showingEdit) {
+        .sheet(isPresented: $showingEdit, onDismiss: {
+            // The Edit sheet can also flip profileRole, so re-sync the
+            // inline picker to whatever was saved while it was open.
+            if let employee {
+                profileRoleSelection = employee.profileRole
+            }
+        }) {
             if let employee {
                 EmployeeEditView(employee: employee)
             }
@@ -76,6 +95,24 @@ struct EmployeeDetailView: View {
         } message: {
             Text("They will reappear on the active roster and can clock in with their card.")
         }
+        .alert("Delete Permanently?", isPresented: $showingDeleteConfirm) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) { deleteEmployee() }
+        } message: {
+            Text(deleteConfirmMessage)
+        }
+    }
+
+    /// Built per-render so the message can name the employee and surface
+    /// the card # that's about to free up — admins typically need the
+    /// number to hand the physical card to a new hire on the spot.
+    private var deleteConfirmMessage: String {
+        guard let employee else { return "" }
+        let name = employee.displayName
+        let card: String = employee.hasAssignedCard
+            ? "\nThe RFID card #\(employee.rfidTag) will be released and can be assigned to someone else."
+            : ""
+        return "\(name)'s profile, photo, and entire punch history will be permanently deleted. This cannot be undone — use Deactivate if you may need their history later.\(card)"
     }
 
     // MARK: - Pieces
@@ -213,6 +250,64 @@ struct EmployeeDetailView: View {
             .foregroundStyle(clockedIn ? Theme.success : Theme.textMuted)
     }
 
+    /// Inline classification editor surfaced directly on the detail page so
+    /// admins don't have to open the full Edit sheet (and re-confirm the
+    /// PIN) just to flip an instructor's role. Saves on every selection
+    /// change with a toast for feedback.
+    private func classificationCard(for employee: Employee) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("CLASSIFICATION")
+                    .font(.system(size: 11, weight: .heavy, design: .rounded))
+                    .tracking(2)
+                    .foregroundStyle(Theme.textFaint)
+                Spacer()
+                Text(employee.profileRole.displayName)
+                    .font(.system(size: 12, weight: .heavy, design: .rounded))
+                    .tracking(1)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Theme.brandGradient))
+                    .foregroundStyle(Theme.text)
+            }
+
+            Picker("Classification", selection: $profileRoleSelection) {
+                ForEach(EmployeeRole.allCases) { role in
+                    Text(role.displayName).tag(role)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: profileRoleSelection) { _, newValue in
+                updateProfileRole(newValue)
+            }
+
+            Text("Determines whether this employee can clock in as an Instructor, a Coordinator, or pick a side at clock-in.")
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(Theme.textMuted)
+        }
+        .card()
+    }
+
+    private func updateProfileRole(_ newRole: EmployeeRole) {
+        guard let employee else { return }
+        guard employee.profileRole != newRole else { return }
+        employee.profileRole = newRole
+        employee.markDirty()
+        do {
+            try modelContext.save()
+            Feedback.success()
+            coordinator.showToast("Role set to \(newRole.displayName).", style: .success)
+            // Re-bind to force the header chip + any computed views to
+            // re-render with the new value.
+            self.employee = employee
+        } catch {
+            Feedback.error()
+            coordinator.showToast("Couldn't save role: \(error.localizedDescription)", style: .error)
+            // Revert the picker so the UI mirrors what's actually persisted.
+            profileRoleSelection = employee.profileRole
+        }
+    }
+
     private func actions(for employee: Employee) -> some View {
         VStack(spacing: 12) {
             Button {
@@ -254,6 +349,20 @@ struct EmployeeDetailView: View {
                 }
                 .buttonStyle(SecondaryButtonStyle())
             }
+
+            // Hard delete sits below Deactivate so it isn't the obvious
+            // first choice — the safer "keep history" action is what an
+            // admin lands on by default. Use this when the card needs to
+            // come back into circulation for a new hire.
+            Button(role: .destructive) {
+                showingDeleteConfirm = true
+            } label: {
+                Label("Delete Permanently", systemImage: "trash.fill")
+                    .foregroundStyle(Theme.danger)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .buttonStyle(SecondaryButtonStyle())
         }
     }
 
@@ -383,9 +492,11 @@ struct EmployeeDetailView: View {
            let open = employee.punchLogs.filter(\.isOpen).max(by: { $0.clockInTime < $1.clockInTime }) {
             open.clockOutTime = .now
             open.wasForcedOut = true
+            open.markDirty()
             employee.isCurrentlyClockedIn = false
         }
         employee.isActive = false
+        employee.markDirty()
         try? modelContext.save()
         Feedback.success()
         coordinator.showToast("\(employee.displayName) deactivated.", style: .success)
@@ -397,9 +508,54 @@ struct EmployeeDetailView: View {
     private func activateEmployee() {
         guard let employee else { return }
         employee.isActive = true
+        employee.markDirty()
         try? modelContext.save()
         Feedback.success()
         coordinator.showToast("\(employee.displayName) reactivated.", style: .success)
         self.employee = employee
+    }
+
+    /// Hard delete — wipes the employee row, their photo file, and (via
+    /// the cascade rule on `Employee.punchLogs`) every punch attached to
+    /// them. Once the row is gone the unique-constraint slot on `rfidTag`
+    /// is freed, so the card can be re-registered to a new person on the
+    /// next scan.
+    private func deleteEmployee() {
+        guard let employee else { return }
+
+        let displayName = employee.displayName
+        let photoFileName = employee.photoFileName
+
+        // Queue the cloud tombstones *before* the rows vanish — afterwards
+        // there is nothing left to mark dirty and the deletion would be
+        // invisible to Supabase. The punches need their own entries: the
+        // server's FK cascade only fires on a hard delete, and setting
+        // `deleted_at` on the employee doesn't propagate.
+        SyncDeletionQueue.enqueueEmployee(employee, in: modelContext)
+
+        // Drop the model first so the cascade fires; SwiftData removes
+        // the related PunchLog rows in the same save.
+        modelContext.delete(employee)
+
+        do {
+            try modelContext.save()
+        } catch {
+            Feedback.error()
+            coordinator.showToast("Couldn't delete: \(error.localizedDescription)", style: .error)
+            return
+        }
+
+        // Photo cleanup runs after the save so we don't orphan the file
+        // on disk if SwiftData rolls the delete back. Best-effort — the
+        // PhotoStorage helper already swallows IO errors.
+        if !photoFileName.isEmpty {
+            PhotoStorage.delete(fileName: photoFileName)
+        }
+
+        Feedback.success()
+        coordinator.showToast("\(displayName) deleted.", style: .success)
+        // Pop back to the roster so we don't render stale fields against
+        // a now-deleted model object.
+        coordinator.go(to: .admin)
     }
 }

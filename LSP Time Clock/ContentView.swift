@@ -118,7 +118,12 @@ struct ContentView: View {
 }
 
 #Preview {
+    let container = try! ModelContainer(
+        for: Employee.self, PunchLog.self, PendingDeletion.self, KioskMessage.self, MessageReceipt.self,
+        configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+    )
     ContentView()
         .environment(AppCoordinator())
-        .modelContainer(for: [Employee.self, PunchLog.self], inMemory: true)
+        .environment(SyncEngine(container: container))
+        .modelContainer(container)
 }

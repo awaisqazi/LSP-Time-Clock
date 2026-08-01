@@ -1,10 +1,22 @@
 import SwiftUI
+import SwiftData
 import Combine
 
 struct IdleView: View {
     @Environment(AppCoordinator.self) private var coordinator
+    @Environment(SyncEngine.self) private var syncEngine
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var now = Date()
+
+    @Query(sort: [SortDescriptor(\KioskMessage.sortOrder)])
+    private var cachedMessages: [KioskMessage]
+
+    /// Only everyone-messages are shown here — nobody has scanned a card
+    /// yet, so anything role-specific or personally targeted would be
+    /// broadcast to the wrong audience (or to the whole lobby).
+    private var studioWideMessages: [KioskMessage] {
+        cachedMessages.filter { $0.isStudioWide(on: now) }
+    }
 
     private let clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     private let dateFmt: DateFormatter = {
@@ -71,6 +83,11 @@ struct IdleView: View {
                 }
                 .padding(.horizontal, hPad)
 
+                if !studioWideMessages.isEmpty {
+                    announcementBanner
+                        .padding(.horizontal, hPad)
+                }
+
                 Spacer(minLength: 0)
 
                 Button {
@@ -102,5 +119,54 @@ struct IdleView: View {
         }
         .background(Theme.backgroundGradient.ignoresSafeArea())
         .onReceive(clock) { now = $0 }
+        // The Idle screen is where the kiosk spends most of its life, so
+        // it owns the slow background poll that keeps portal-side edits
+        // trickling in even when nobody touches the iPad all afternoon.
+        .onAppear { syncEngine.startIdlePolling() }
+        .onDisappear { syncEngine.stopIdlePolling() }
+    }
+
+    /// Deliberately understated: a lobby screen shouldn't shout, and this
+    /// sits between the clock and the primary action, so it must never
+    /// compete with either.
+    private var announcementBanner: some View {
+        VStack(spacing: isCompact ? 8 : 10) {
+            ForEach(studioWideMessages.prefix(2)) { message in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "megaphone.fill")
+                        .font(.system(size: isCompact ? 12 : 14, weight: .bold))
+                        .foregroundStyle(Theme.gold)
+                        .padding(.top, 1)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        if !message.title.isEmpty {
+                            Text(message.title)
+                                .font(.system(size: isCompact ? 13 : 14, weight: .heavy, design: .rounded))
+                                .foregroundStyle(Theme.text)
+                        }
+                        if !message.body.isEmpty {
+                            Text(message.body)
+                                .font(.system(size: isCompact ? 11 : 13, weight: .medium, design: .rounded))
+                                .foregroundStyle(Theme.textMuted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .multilineTextAlignment(.leading)
+            }
+        }
+        .padding(.horizontal, isCompact ? 14 : 18)
+        .padding(.vertical, isCompact ? 10 : 14)
+        .frame(maxWidth: 560)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Theme.surface.opacity(0.85))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Theme.gold.opacity(0.45), lineWidth: 1)
+                )
+        )
     }
 }

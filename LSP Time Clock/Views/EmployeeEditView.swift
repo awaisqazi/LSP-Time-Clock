@@ -24,6 +24,7 @@ struct EmployeeEditView: View {
     @State private var role: String = ""
     @State private var pin: String = ""
     @State private var isActive: Bool = true
+    @State private var profileRole: EmployeeRole = .instructor
 
     /// Set only when the admin picks a new image; nil means "keep the
     /// employee's existing photo". This lets us avoid rewriting the photo
@@ -64,6 +65,7 @@ struct EmployeeEditView: View {
         trimmedRole != employee.role ||
         trimmedPIN != employee.pin ||
         isActive != employee.isActive ||
+        profileRole != employee.profileRole ||
         newImage != nil
     }
 
@@ -91,6 +93,19 @@ struct EmployeeEditView: View {
                         .card()
 
                         VStack(spacing: isCompact ? 12 : 16) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("CLASSIFICATION")
+                                    .font(.system(size: 11, weight: .heavy, design: .rounded))
+                                    .tracking(2)
+                                    .foregroundStyle(Theme.textFaint)
+                                Picker("Classification", selection: $profileRole) {
+                                    ForEach(EmployeeRole.allCases) { role in
+                                        Text(role.displayName).tag(role)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                            }
+
                             textField("Role", text: $role, field: .role)
                             textField("PIN (4 digits, optional)", text: $pin, field: .pin, keyboard: .numberPad)
 
@@ -149,6 +164,7 @@ struct EmployeeEditView: View {
             role = employee.role
             pin = employee.pin
             isActive = employee.isActive
+            profileRole = employee.profileRole
         }
         .onChange(of: pickedItem) { _, newItem in
             Task { await loadPicked(newItem) }
@@ -340,13 +356,16 @@ struct EmployeeEditView: View {
                 if let open = employee.punchLogs.filter(\.isOpen).max(by: { $0.clockInTime < $1.clockInTime }) {
                     open.clockOutTime = .now
                     open.wasForcedOut = true
+                    open.markDirty()
                 }
                 employee.isCurrentlyClockedIn = false
             }
             employee.isActive = isActive
+            employee.profileRole = profileRole
             if let newPhotoFileName {
                 employee.photoFileName = newPhotoFileName
             }
+            employee.markDirty()
 
             try modelContext.save()
 

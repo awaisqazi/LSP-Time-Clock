@@ -153,18 +153,22 @@ struct AdminOverviewView: View {
     }
 
     private func clockedInTile(_ employee: Employee) -> some View {
-        let elapsed = openShift(for: employee).map {
-            now.timeIntervalSince($0.clockInTime)
-        } ?? 0
+        let active = openShift(for: employee)
+        let elapsed = active.map { now.timeIntervalSince($0.clockInTime) } ?? 0
 
         return HStack(spacing: 12) {
             EmployeeAvatar(employee: employee, size: 44)
             VStack(alignment: .leading, spacing: 2) {
-                Text(employee.displayName)
-                    .font(.system(size: 15, weight: .heavy, design: .rounded))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                HStack(spacing: 8) {
+                    Text(employee.displayName)
+                        .font(.system(size: 15, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    if let active {
+                        shiftRolePill(active.shiftRole)
+                    }
+                }
                 if !employee.role.isEmpty {
                     Text(employee.role)
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
@@ -189,6 +193,25 @@ struct AdminOverviewView: View {
                         .stroke(Theme.surfaceStroke, lineWidth: 1)
                 )
         )
+    }
+
+    /// Same compact chip used on the Timesheets list — gold for instructor
+    /// shifts, tan for coordinator shifts — so admins read both screens
+    /// the same way.
+    @ViewBuilder
+    private func shiftRolePill(_ role: ShiftRole) -> some View {
+        let label = role == .instructor ? "INSTRUCTOR" : "COORDINATOR"
+        let fill: AnyShapeStyle = role == .instructor
+            ? AnyShapeStyle(Theme.brandGradient)
+            : AnyShapeStyle(Theme.tan.opacity(0.45))
+
+        Text(label)
+            .font(.system(size: 9, weight: .heavy, design: .rounded))
+            .tracking(1.4)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(fill))
+            .foregroundStyle(Theme.text)
     }
 
     private var missedPunchesCard: some View {
@@ -258,6 +281,10 @@ struct AdminOverviewView: View {
     private func forceOut(_ log: PunchLog) {
         log.clockOutTime = now
         log.wasForcedOut = true
+        log.markDirty()
+        // The punch is what payroll needs uploaded. `isCurrentlyClockedIn`
+        // has no server column, so dirtying the employee here would only
+        // re-push a stale profile over the portal's newer copy.
         log.employee?.isCurrentlyClockedIn = false
         try? modelContext.save()
         Feedback.success()

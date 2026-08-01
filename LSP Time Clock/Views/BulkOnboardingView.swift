@@ -24,6 +24,12 @@ struct BulkOnboardingView: View {
     @State private var saveError: String?
     @State private var rfidFieldActive = true
 
+    /// Profile classification chosen for the employee currently in the
+    /// queue. Reset to whatever the model has on the next employee (or
+    /// `.instructor` for a freshly-imported pending row that has never
+    /// been edited).
+    @State private var selectedRole: EmployeeRole = .instructor
+
     private var isCompact: Bool { hSizeClass == .compact }
 
     /// All pending employees that haven't been skipped during the current
@@ -66,6 +72,7 @@ struct BulkOnboardingView: View {
                             progressPill
                             employeeCard(employee)
                             cardSection
+                            roleSection
                             photoSection
                             actions(for: employee)
                             if let saveError {
@@ -100,6 +107,11 @@ struct BulkOnboardingView: View {
         .onAppear {
             sessionStartCount = queue.count
             rfidFieldActive = true
+            // Pull the role for whoever surfaces first. Ordinarily a
+            // bulk-imported row carries the default `.instructor`, but a
+            // re-entry into this flow shouldn't clobber a previously
+            // chosen value.
+            selectedRole = current?.profileRole ?? .instructor
         }
         .onDisappear { rfidFieldActive = false }
         .onChange(of: pickedItem) { _, newItem in
@@ -111,6 +123,11 @@ struct BulkOnboardingView: View {
             pickedItem = nil
             saveError = nil
             rfidFieldActive = true
+            // Pull the role from the model when we move to a new employee
+            // so an admin who pre-set a role on an earlier screen sees it
+            // reflected here (and doesn't accidentally overwrite it on
+            // save with a stale `.instructor` default).
+            selectedRole = current?.profileRole ?? .instructor
         }
         .fullScreenCover(isPresented: $showingCamera) {
             CameraCaptureView(
@@ -268,12 +285,30 @@ struct BulkOnboardingView: View {
         .card()
     }
 
+    private var roleSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Step 2 — Set Role")
+
+            Picker("Role", selection: $selectedRole) {
+                ForEach(EmployeeRole.allCases) { role in
+                    Text(role.displayName).tag(role)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text("Choose **Both** if this employee teaches classes *and* covers coordinator shifts. They'll pick which side they're working each time they clock in.")
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(Theme.textMuted)
+        }
+        .card()
+    }
+
     private var photoSection: some View {
         let size: CGFloat = isCompact ? 130 : 160
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                sectionTitle("Step 2 — Add Photo")
+                sectionTitle("Step 3 — Add Photo")
                 Text("(optional)")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(Theme.textFaint)
@@ -451,6 +486,8 @@ struct BulkOnboardingView: View {
                 }
             }
             employee.rfidTag = scannedTag
+            employee.profileRole = selectedRole
+            employee.markDirty()
 
             try modelContext.save()
 

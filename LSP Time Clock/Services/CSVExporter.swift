@@ -1,8 +1,12 @@
 import Foundation
 
 enum CSVExporter {
+    /// Full-history backup. This is the canonical hand-off file for the web
+    /// portal's CSV importer, which is why the punch's own UUID leads the
+    /// row: without a stable per-punch key the importer can only append,
+    /// and re-importing a corrected backup would duplicate every shift.
     static func csv(from logs: [PunchLog]) -> String {
-        let header = "Employee ID,First Name,Last Name,Email,RFID Tag,Clock In,Clock Out,Total Hours,Forced Out\n"
+        let header = "Punch ID,Employee ID,First Name,Last Name,Email,RFID Tag,Profile Role,Shift Role,Scheduled Classes,Actual Classes Taught,Clock In,Clock Out,Hours Logged,Billable Hours,Forced Out\n"
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
 
@@ -10,29 +14,50 @@ enum CSVExporter {
 
         var body = ""
         for log in sorted {
+            let punchID = log.id.uuidString
             let id = log.employee?.id.uuidString ?? ""
             let first = log.employee?.firstName ?? ""
             let last = log.employee?.lastName ?? ""
             let email = log.employee?.email ?? ""
             let rfid = log.employee?.rfidTag ?? ""
+            let profileRole = log.employee?.profileRole.displayName ?? ""
+            let shiftRoleName = log.shiftRole.displayName
+            let scheduled = "\(log.scheduledClasses)"
+            let actual = "\(log.actualClassesTaught)"
             let inStr = iso.string(from: log.clockInTime)
             let outStr = log.clockOutTime.map { iso.string(from: $0) } ?? ""
-            let hours = log.totalHours.map { String(format: "%.2f", $0) } ?? ""
+            let hoursLogged = log.totalHours.map { String(format: "%.2f", $0) } ?? ""
+            let billable = formattedBillableHours(for: log)
             let forced = log.wasForcedOut ? "true" : "false"
 
             body += [
+                punchID,
                 id,
                 escape(first),
                 escape(last),
                 escape(email),
                 escape(rfid),
+                escape(profileRole),
+                escape(shiftRoleName),
+                scheduled,
+                actual,
                 inStr,
                 outStr,
-                hours,
+                hoursLogged,
+                billable,
                 forced
             ].joined(separator: ",") + "\n"
         }
         return header + body
+    }
+
+    /// Format `PunchLog.billableHours` for export. Open shifts emit a blank
+    /// cell — payroll never pays an in-flight shift, and showing "0.00" for
+    /// an instructor still on the floor would understate the row.
+    private static func formattedBillableHours(for log: PunchLog) -> String {
+        guard log.clockOutTime != nil else { return "" }
+        guard let value = log.billableHours else { return "" }
+        return String(format: "%.2f", value)
     }
 
     static func writeToTempFile(_ csv: String, fileName: String) throws -> URL {
@@ -47,7 +72,7 @@ enum CSVExporter {
     /// onboarding: name, RFID card #, PIN, role, status. Pending-onboarding
     /// employees show a blank RFID column rather than the internal sentinel.
     static func rosterCSV(_ employees: [Employee]) -> String {
-        let header = "Full Name,Email,RFID Card,PIN,Role,Status\n"
+        let header = "Full Name,Email,RFID Card,PIN,Role,Classification,Status\n"
         let sorted = employees.sorted { $0.fullName.lowercased() < $1.fullName.lowercased() }
         var body = ""
         for emp in sorted {
@@ -59,6 +84,7 @@ enum CSVExporter {
                 escape(card),
                 escape(emp.pin),
                 escape(emp.role),
+                escape(emp.profileRole.displayName),
                 status
             ].joined(separator: ",") + "\n"
         }
@@ -73,7 +99,7 @@ enum CSVExporter {
     /// Open shifts (no clock-out) are included with a blank Clock Out and
     /// blank Total Hours so they're visible to whoever is doing payroll.
     static func timesheetCSV(_ logs: [PunchLog], from start: Date, to end: Date) -> String {
-        let header = "Date,Employee,Email,Role,Clock In,Clock Out,Total Hours,Forced Out\n"
+        let header = "Date,Employee,Email,Role,Profile Role,Shift Role,Scheduled Classes,Actual Classes Taught,Clock In,Clock Out,Hours Logged,Billable Hours,Forced Out\n"
         let dateOnly = DateFormatter()
         dateOnly.dateFormat = "yyyy-MM-dd"
         let dateTime = DateFormatter()
@@ -88,7 +114,12 @@ enum CSVExporter {
             let name = log.employee?.fullName ?? "—"
             let email = log.employee?.email ?? ""
             let role = log.employee?.role ?? ""
-            let hours = log.totalHours.map { String(format: "%.2f", $0) } ?? ""
+            let profileRole = log.employee?.profileRole.displayName ?? ""
+            let shiftRoleName = log.shiftRole.displayName
+            let scheduled = "\(log.scheduledClasses)"
+            let actual = "\(log.actualClassesTaught)"
+            let hoursLogged = log.totalHours.map { String(format: "%.2f", $0) } ?? ""
+            let billable = formattedBillableHours(for: log)
             let outStr = log.clockOutTime.map(dateTime.string(from:)) ?? ""
             let forced = log.wasForcedOut ? "true" : "false"
             body += [
@@ -96,9 +127,14 @@ enum CSVExporter {
                 escape(name),
                 escape(email),
                 escape(role),
+                escape(profileRole),
+                escape(shiftRoleName),
+                scheduled,
+                actual,
                 dateTime.string(from: log.clockInTime),
                 outStr,
-                hours,
+                hoursLogged,
+                billable,
                 forced
             ].joined(separator: ",") + "\n"
         }

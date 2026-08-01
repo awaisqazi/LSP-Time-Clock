@@ -34,6 +34,13 @@ final class AppCoordinator {
     /// not fire and the auto-reset timer does not run.
     var isPresentingSystemModal: Bool = false
 
+    /// Hook the App wires to the sync engine at launch. Every trip back to
+    /// the Idle screen is a safe, no-one-is-mid-punch moment to talk to the
+    /// cloud, so that's where the opportunistic sync is triggered from. Kept
+    /// as a closure rather than a direct reference so the coordinator stays
+    /// ignorant of networking entirely.
+    var onReturnHome: (() -> Void)?
+
     private var resetTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
 
@@ -51,6 +58,7 @@ final class AppCoordinator {
 
     func goHome() {
         go(to: .idle)
+        onReturnHome?()
     }
 
     func userActivity() {
@@ -109,11 +117,18 @@ final class AppCoordinator {
         // explicitly locks via the Lock button or the scene ends
         // (app backgrounded / device locked). `handleScenePhaseChange`
         // takes care of the latter.
-        case .admin, .adminEmployeeDetail, .bulkOnboarding:
+        //
+        // Registration is grouped here even though it's triggered by a
+        // customer-facing card scan: filling in name/email/photo is a
+        // deliberate, admin-supervised data-entry flow that routinely
+        // takes longer than the 30-second kiosk timeout. Letting it
+        // auto-reset would discard the half-typed form. The Cancel
+        // button or scenePhase change still gets it back to idle.
+        case .admin, .adminEmployeeDetail, .bulkOnboarding, .registering:
             needs = false
         // Customer-facing kiosk states: reset after inactivity so the
         // next person walking up sees a clean Idle screen.
-        case .scanning, .registering, .verifying, .adminPIN:
+        case .scanning, .verifying, .adminPIN:
             needs = true
         }
         guard needs else { return }

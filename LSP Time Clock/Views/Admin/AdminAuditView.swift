@@ -200,6 +200,9 @@ struct AdminAuditView: View {
     private func forceOut(_ log: PunchLog) {
         log.clockOutTime = now
         log.wasForcedOut = true
+        log.markDirty()
+        // Local-only flag; the employee row stays clean so this force-out
+        // can't overwrite a portal edit to their profile.
         log.employee?.isCurrentlyClockedIn = false
         try? modelContext.save()
         Feedback.success()
@@ -303,6 +306,10 @@ struct ManualPunchAddView: View {
             clockOutTime: hasClockOut ? clockOut : nil
         )
         modelContext.insert(log)
+        log.markDirty()
+        // isCurrentlyClockedIn is local-only bookkeeping (no server column) —
+        // marking the employee dirty for it would push a full stale row and
+        // could revert a fresher portal edit.
         if !hasClockOut {
             employee.isCurrentlyClockedIn = true
         }

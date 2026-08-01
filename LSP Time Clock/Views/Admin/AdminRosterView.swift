@@ -412,6 +412,7 @@ struct AdminRosterView: View {
                 photoFileName: ""
             )
             modelContext.insert(employee)
+            employee.markDirty()
             result.created += 1
         }
 

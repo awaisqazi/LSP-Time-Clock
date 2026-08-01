@@ -13,6 +13,7 @@ struct AdminTimesheetsView: View {
     @State private var startDate: Date = Self.defaultStart()
     @State private var endDate: Date = Self.defaultEnd()
     @State private var exportURL: URL?
+    @State private var backupURL: URL?
     @State private var editing: PunchLog?
 
     private var isCompact: Bool { hSizeClass == .compact }
@@ -43,18 +44,33 @@ struct AdminTimesheetsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                if let url = exportURL {
-                    ShareLink(item: url, preview: SharePreview(
-                        "Timesheet \(rangeLabel)",
-                        icon: Image(systemName: "doc.text")
-                    )) {
-                        Label("Export", systemImage: "square.and.arrow.up")
+                Menu {
+                    if let url = exportURL {
+                        ShareLink(item: url, preview: SharePreview(
+                            "Timesheet \(rangeLabel)",
+                            icon: Image(systemName: "doc.text")
+                        )) {
+                            Label("Timesheet (selected range)", systemImage: "calendar")
+                        }
                     }
+                    if let url = backupURL {
+                        ShareLink(item: url, preview: SharePreview(
+                            "LSP Full Backup",
+                            icon: Image(systemName: "externaldrive.badge.timemachine")
+                        )) {
+                            Label("Full Backup (all history)", systemImage: "externaldrive.badge.timemachine")
+                        }
+                    }
+                } label: {
+                    Label("Export", systemImage: "square.and.arrow.up")
                 }
             }
         }
         .task(id: cacheKey) {
             exportURL = makeURL()
+        }
+        .task(id: backupCacheKey) {
+            backupURL = makeBackupURL()
         }
         .sheet(item: $editing) { log in
             PunchLogEditView(log: log)
@@ -196,11 +212,14 @@ struct AdminTimesheetsView: View {
             }
             .frame(width: 56)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(log.employee?.displayName ?? "—")
-                    .font(.system(size: 14, weight: .heavy, design: .rounded))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(log.employee?.displayName ?? "—")
+                        .font(.system(size: 14, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+                    shiftRolePill(log.shiftRole)
+                }
                 HStack(spacing: 6) {
                     Text("IN \(timeFmt.string(from: log.clockInTime))")
                     Text("·")
@@ -239,6 +258,26 @@ struct AdminTimesheetsView: View {
         )
     }
 
+    /// Compact role chip shown next to the employee name. Coordinator
+    /// shifts get a tan-tinted fill so they're visually distinct from
+    /// the gold instructor pill — letting payroll spot mis-tagged shifts
+    /// at a glance without having to open the editor.
+    @ViewBuilder
+    private func shiftRolePill(_ role: ShiftRole) -> some View {
+        let label = role == .instructor ? "INSTRUCTOR" : "COORDINATOR"
+        let fill: AnyShapeStyle = role == .instructor
+            ? AnyShapeStyle(Theme.brandGradient)
+            : AnyShapeStyle(Theme.tan.opacity(0.45))
+
+        Text(label)
+            .font(.system(size: 9, weight: .heavy, design: .rounded))
+            .tracking(1.4)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(fill))
+            .foregroundStyle(Theme.text)
+    }
+
     // MARK: - Helpers
 
     private var rangeLabel: String {
@@ -260,6 +299,30 @@ struct AdminTimesheetsView: View {
             hasher.combine(log.clockOutTime)
         }
         return hasher.finalize()
+    }
+
+    /// Invalidates on any change to any punch, not just the ones in the
+    /// visible range — a full backup that silently omits last month's
+    /// correction would be worse than no backup at all.
+    private var backupCacheKey: Int {
+        var hasher = Hasher()
+        for log in allLogs {
+            hasher.combine(log.id)
+            hasher.combine(log.clockInTime)
+            hasher.combine(log.clockOutTime)
+            hasher.combine(log.updatedAt)
+        }
+        return hasher.finalize()
+    }
+
+    private func makeBackupURL() -> URL? {
+        let csv = CSVExporter.csv(from: allLogs)
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return try? CSVExporter.writeToTempFile(
+            csv,
+            fileName: "LSP-Full-Backup-\(f.string(from: Date())).csv"
+        )
     }
 
     private func makeURL() -> URL? {
