@@ -66,7 +66,30 @@ struct VerificationView: View {
             .sorted { $0.sortOrder < $1.sortOrder }
     }
 
+    /// Message ids this employee has already acknowledged on some earlier
+    /// punch. Loaded once per screen — acknowledgement can't change mid-
+    /// screen except via this screen's own Confirm.
+    @State private var acknowledgedMessageIDs: Set<UUID> = []
+
+    /// The on-screen announcements that still need this person's explicit
+    /// tick. While non-empty: the acknowledgement checkbox is shown, the
+    /// Confirm button is locked behind it, and the kiosk's 30-second
+    /// auto-reset is suspended so reading can't be raced against a clock.
+    private var messagesToAcknowledge: [KioskMessage] {
+        applicableMessages.filter { !acknowledgedMessageIDs.contains($0.id) }
+    }
+
+    /// The acknowledgement checkbox state. Deliberately NOT reset when a
+    /// role pick reveals additional messages — the newly revealed card is
+    /// on screen above a box the user has already read once, and re-
+    /// unticking it mid-flow reads as the kiosk being broken.
+    @State private var hasTickedAcknowledgement = false
+
     private var canConfirm: Bool {
+        // A fresh announcement locks the punch behind its checkbox.
+        if !messagesToAcknowledge.isEmpty && !hasTickedAcknowledgement {
+            return false
+        }
         if isClockIn {
             // "Both" employees must pick a side before confirming. The
             // scheduled-classes picker has a default of 1, which is a
@@ -122,6 +145,14 @@ struct VerificationView: View {
                             // answering (e.g. "3rd class is cancelled today").
                             ForEach(applicableMessages) { message in
                                 AnnouncementCard(message: message)
+                            }
+
+                            // Fresh announcements must be explicitly ticked
+                            // off before the punch can be confirmed. Already-
+                            // acknowledged ones render above purely as
+                            // reference and never gate again.
+                            if !messagesToAcknowledge.isEmpty {
+                                acknowledgementRow
                             }
 
                             // Conditional question cards (clock-in side).
@@ -180,6 +211,16 @@ struct VerificationView: View {
             .onTapGesture { coordinator.userActivity() }
         }
         .onAppear(perform: loadEmployee)
+        // Suspend the kiosk auto-reset exactly while an unacknowledged
+        // announcement is on screen; `messagesToAcknowledge` can change
+        // mid-screen when a "both" employee's role pick reveals a
+        // role-targeted notice.
+        .onChange(of: messagesToAcknowledge.map(\.id), initial: true) { _, pending in
+            coordinator.setRequiresAcknowledgement(!pending.isEmpty)
+        }
+        .onDisappear {
+            coordinator.setRequiresAcknowledgement(false)
+        }
     }
 
     // MARK: - Pieces
@@ -208,6 +249,34 @@ struct VerificationView: View {
                     )
             }
         }
+    }
+
+    /// Tappable checkbox row gating the punch behind the announcement(s).
+    /// A big hit target, kiosk-style — the whole row toggles.
+    private var acknowledgementRow: some View {
+        Button {
+            hasTickedAcknowledgement.toggle()
+            coordinator.userActivity()
+        } label: {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: hasTickedAcknowledgement ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(hasTickedAcknowledgement ? Theme.gold : Theme.textFaint)
+                Text(messagesToAcknowledge.count > 1
+                     ? "I've read and acknowledge the announcements above"
+                     : "I've read and acknowledge the announcement above")
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Theme.text)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(18)
+        }
+        .buttonStyle(.plain)
+        .card()
+        .frame(maxWidth: 540)
+        .accessibilityAddTraits(hasTickedAcknowledgement ? [.isSelected] : [])
     }
 
     private var shiftRoleChooser: some View {
@@ -411,6 +480,19 @@ struct VerificationView: View {
         employee = loaded
         guard let loaded else { return }
 
+        // Which announcements has this person already ticked off on some
+        // earlier punch? Loaded once per screen: acknowledgement can only
+        // change via this screen's own Confirm.
+        let ackEmployeeID = loaded.id
+        let ackDescriptor = FetchDescriptor<MessageReceipt>(
+            predicate: #Predicate {
+                $0.employeeID == ackEmployeeID && $0.acknowledgedAt != nil
+            }
+        )
+        acknowledgedMessageIDs = Set(
+            ((try? modelContext.fetch(ackDescriptor)) ?? []).map(\.messageID)
+        )
+
         // Pre-fill the inputs based on what side of the punch we're on.
         // Doing this in `onAppear` (vs. computed property) keeps the
         // segmented controls bindable directly to @State.
@@ -453,9 +535,11 @@ struct VerificationView: View {
     private func recordReceipts(
         for employee: Employee,
         shown: [KioskMessage],
-        punchID: UUID?
+        punchID: UUID?,
+        acknowledging: Set<UUID>
     ) {
         let employeeID = employee.id
+        let now = Date()
         for message in shown {
             let messageID = message.id
             // A shift shows the same announcement twice — once on the way
@@ -471,15 +555,26 @@ struct VerificationView: View {
                     }
                 )
                 descriptor.fetchLimit = 1
-                if let existing = try? modelContext.fetch(descriptor), !existing.isEmpty { continue }
+                if let existing = (try? modelContext.fetch(descriptor))?.first {
+                    // Same-punch re-display (clock-out after clock-in). If
+                    // the box was ticked now but the earlier receipt never
+                    // carried the acknowledgement, upgrade it in place.
+                    if acknowledging.contains(messageID), existing.acknowledgedAt == nil {
+                        existing.acknowledgedAt = now
+                        existing.needsSync = true
+                    }
+                    continue
+                }
             }
-            modelContext.insert(
-                MessageReceipt(
-                    messageID: messageID,
-                    employeeID: employeeID,
-                    punchID: punchID
-                )
+            let receipt = MessageReceipt(
+                messageID: messageID,
+                employeeID: employeeID,
+                punchID: punchID
             )
+            if acknowledging.contains(messageID) {
+                receipt.acknowledgedAt = now
+            }
+            modelContext.insert(receipt)
         }
     }
 
@@ -492,6 +587,12 @@ struct VerificationView: View {
         // role selection is gone and the filter would produce a different
         // (wrong) set.
         let shownMessages = applicableMessages
+        // The ticked box covers exactly the messages it was gating. Confirm
+        // can't be reached un-ticked while any of these exist (canConfirm),
+        // so an empty set here means nothing needed acknowledging.
+        let acknowledging = hasTickedAcknowledgement
+            ? Set(messagesToAcknowledge.map(\.id))
+            : Set<UUID>()
 
         if missedPunchFrom != nil {
             // Force-close any still-open prior shifts to the end of the day
@@ -521,7 +622,7 @@ struct VerificationView: View {
             // push a stale copy of their profile on every punch and stomp
             // whatever the portal edited in the meantime.
             employee.isCurrentlyClockedIn = true
-            recordReceipts(for: employee, shown: shownMessages, punchID: newLog.id)
+            recordReceipts(for: employee, shown: shownMessages, punchID: newLog.id, acknowledging: acknowledging)
             try? modelContext.save()
             Feedback.success()
             syncEngine.syncAfterPunch()
@@ -557,7 +658,7 @@ struct VerificationView: View {
             }
             // Local flag only — see the clock-in path above.
             employee.isCurrentlyClockedIn = false
-            recordReceipts(for: employee, shown: shownMessages, punchID: closedPunchID)
+            recordReceipts(for: employee, shown: shownMessages, punchID: closedPunchID, acknowledging: acknowledging)
             try? modelContext.save()
             Feedback.success()
             syncEngine.syncAfterPunch()
@@ -580,7 +681,7 @@ struct VerificationView: View {
             log.markDirty()
             // Local flag only — see the missed-punch path above.
             employee.isCurrentlyClockedIn = true
-            recordReceipts(for: employee, shown: shownMessages, punchID: log.id)
+            recordReceipts(for: employee, shown: shownMessages, punchID: log.id, acknowledging: acknowledging)
             try? modelContext.save()
             Feedback.success()
             syncEngine.syncAfterPunch()

@@ -39,6 +39,16 @@ final class AppCoordinator {
     /// not fire and the auto-reset timer does not run.
     var isPresentingSystemModal: Bool = false
 
+    /// True while the verification screen is showing an announcement the
+    /// employee hasn't acknowledged yet. See `restartResetTimerIfNeeded`.
+    private(set) var requiresAcknowledgement: Bool = false
+
+    func setRequiresAcknowledgement(_ value: Bool) {
+        guard requiresAcknowledgement != value else { return }
+        requiresAcknowledgement = value
+        restartResetTimerIfNeeded()
+    }
+
     /// Hook the App wires to the sync engine at launch. Every trip back to
     /// the Idle screen is a safe, no-one-is-mid-punch moment to talk to the
     /// cloud, so that's where the opportunistic sync is triggered from. Kept
@@ -112,6 +122,13 @@ final class AppCoordinator {
         // Don't auto-reset while a system modal is presented (the user
         // could be browsing the photo library for longer than 30s).
         if isPresentingSystemModal { return }
+
+        // An unacknowledged announcement holds the verification screen
+        // open — reading can't be raced against a 30-second clock. The
+        // hold is scoped to `.verifying` so a stale flag can never freeze
+        // any other kiosk screen; Cancel (no punch recorded) remains the
+        // escape hatch if someone badges and walks away.
+        if requiresAcknowledgement, case .verifying = mode { return }
 
         let needs: Bool
         switch mode {
