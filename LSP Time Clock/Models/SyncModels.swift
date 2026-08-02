@@ -175,6 +175,14 @@ final class MessageReceipt {
     var employeeID: UUID = UUID()
     var punchID: UUID?
     var seenAt: Date = Date()
+
+    /// Set when the employee tapped "Got it" on the success screen, which is
+    /// a stronger claim than `seenAt`: the card was on screen *and* someone
+    /// deliberately dismissed it. Nil means the notice merely scrolled past
+    /// them, which is exactly what the kiosk should keep reporting if they
+    /// walk away mid-punch. Literal default keeps the migration lightweight.
+    var acknowledgedAt: Date? = nil
+
     var needsSync: Bool = true
 
     init(messageID: UUID, employeeID: UUID, punchID: UUID?, seenAt: Date = Date()) {
@@ -183,6 +191,7 @@ final class MessageReceipt {
         self.employeeID = employeeID
         self.punchID = punchID
         self.seenAt = seenAt
+        self.acknowledgedAt = nil
         self.needsSync = true
     }
 }

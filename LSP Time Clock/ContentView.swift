@@ -33,8 +33,13 @@ struct ContentView: View {
             RegistrationView(rfidTag: rfid)
         case .verifying(let id, let missed):
             VerificationView(employeeID: id, missedPunchFrom: missed)
-        case .punchSuccess(let name, let didClockIn):
-            PunchSuccessView(name: name, didClockIn: didClockIn)
+        case .punchSuccess(let name, let didClockIn, let employeeID, let punchID):
+            PunchSuccessView(
+                name: name,
+                didClockIn: didClockIn,
+                employeeID: employeeID,
+                punchID: punchID
+            )
         case .adminPIN:
             AdminPINView()
         case .admin:
@@ -108,7 +113,7 @@ struct ContentView: View {
             }
         case .registering(let tag): "register.\(tag)"
         case .verifying(let id, let d): "verify.\(id).\(d?.timeIntervalSince1970 ?? 0)"
-        case .punchSuccess(let n, let inOut): "success.\(n).\(inOut)"
+        case .punchSuccess(let n, let inOut, _, let punchID): "success.\(n).\(inOut).\(punchID?.uuidString ?? "-")"
         case .adminPIN: "adminPIN"
         case .admin: "admin"
         case .adminEmployeeDetail(let id): "admin.detail.\(id)"

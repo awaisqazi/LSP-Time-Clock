@@ -185,6 +185,7 @@ nonisolated struct ReceiptPush: Encodable, Sendable {
     let employeeID: UUID
     let punchID: UUID?
     let seenAt: Date
+    let acknowledgedAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -192,6 +193,7 @@ nonisolated struct ReceiptPush: Encodable, Sendable {
         case employeeID = "employee_id"
         case punchID = "punch_id"
         case seenAt = "seen_at"
+        case acknowledgedAt = "acknowledged_at"
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -201,6 +203,11 @@ nonisolated struct ReceiptPush: Encodable, Sendable {
         try container.encode(employeeID, forKey: .employeeID)
         try container.encode(punchID, forKey: .punchID)
         try container.encode(seenAt, forKey: .seenAt)
+        // Written unconditionally (null included) rather than
+        // `encodeIfPresent`: the push is a whole-row upsert, so omitting the
+        // key on a not-yet-acknowledged receipt would leave whatever the
+        // server already had in that column.
+        try container.encode(acknowledgedAt, forKey: .acknowledgedAt)
     }
 }
 
@@ -958,9 +965,16 @@ final class SyncEngine {
                     messageID: receipt.messageID,
                     employeeID: receipt.employeeID,
                     punchID: receipt.punchID,
-                    seenAt: receipt.seenAt
+                    seenAt: receipt.seenAt,
+                    acknowledgedAt: receipt.acknowledgedAt
                 )
             }
+            // What each row claimed at send time. A receipt is no longer
+            // immutable — tapping "Got it" stamps `acknowledgedAt` and
+            // re-dirties an already-pushed row — so an ack landing while this
+            // request is in flight must not be cleared by the success path
+            // below, or it would never reach the server.
+            let sentAcks = batch.map(\.acknowledgedAt)
             do {
                 try await api.upsert(table: SupabaseTable.receipts, rows: rows, onConflict: "id")
             } catch SupabaseError.http(let status, _) where status == 409 {
@@ -973,9 +987,9 @@ final class SyncEngine {
                 try context.save()
                 continue
             }
-            // Receipts are immutable once written, so there is no mid-flight
-            // edit to guard against here.
-            for receipt in batch { receipt.needsSync = false }
+            for (receipt, sentAck) in zip(batch, sentAcks) where receipt.acknowledgedAt == sentAck {
+                receipt.needsSync = false
+            }
             try context.save()
             pushed += batch.count
         }

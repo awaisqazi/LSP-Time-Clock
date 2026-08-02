@@ -11,7 +11,12 @@ enum AppMode: Equatable {
     case scanning(ScanPurpose)
     case registering(rfid: String)
     case verifying(employeeID: UUID, missedPunchFrom: Date?)
-    case punchSuccess(name: String, didClockIn: Bool)
+    /// `employeeID` / `punchID` are only carried so the success screen can
+    /// look up the receipts written for *this* punch and hold there until any
+    /// unacknowledged announcement is dismissed. They default to nil for the
+    /// call sites (e.g. registration) that have nothing to acknowledge, which
+    /// keeps every existing `go(to:)` untouched.
+    case punchSuccess(name: String, didClockIn: Bool, employeeID: UUID? = nil, punchID: UUID? = nil)
     case adminPIN
     case admin
     case adminEmployeeDetail(employeeID: UUID)

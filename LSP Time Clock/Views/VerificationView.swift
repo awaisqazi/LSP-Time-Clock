@@ -121,7 +121,7 @@ struct VerificationView: View {
                             // they're context the employee may need *before*
                             // answering (e.g. "3rd class is cancelled today").
                             ForEach(applicableMessages) { message in
-                                announcementCard(message)
+                                AnnouncementCard(message: message)
                             }
 
                             // Conditional question cards (clock-in side).
@@ -208,42 +208,6 @@ struct VerificationView: View {
                     )
             }
         }
-    }
-
-    /// Announcement card. Uses the same rounded-surface `.card()` shell as
-    /// the question cards so it reads as part of the same screen, with a
-    /// gold accent bar + megaphone to mark it as information rather than
-    /// something the employee has to answer.
-    private func announcementCard(_ message: KioskMessage) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(Theme.brandGradient)
-                .frame(width: 5)
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Image(systemName: "megaphone.fill")
-                        .font(.system(size: isCompact ? 14 : 16, weight: .bold))
-                        .foregroundStyle(Theme.gold)
-                    Text(message.title.isEmpty ? "Studio Announcement" : message.title)
-                        .font(.system(size: isCompact ? 15 : 17, weight: .heavy, design: .rounded))
-                        .foregroundStyle(Theme.text)
-                        .multilineTextAlignment(.leading)
-                }
-
-                if !message.body.isEmpty {
-                    Text(message.body)
-                        .font(.system(size: isCompact ? 13 : 15, weight: .medium, design: .rounded))
-                        .foregroundStyle(Theme.textMuted)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-        .card()
-        .frame(maxWidth: 540)
     }
 
     private var shiftRoleChooser: some View {
@@ -561,7 +525,12 @@ struct VerificationView: View {
             try? modelContext.save()
             Feedback.success()
             syncEngine.syncAfterPunch()
-            coordinator.go(to: .punchSuccess(name: employee.fullName, didClockIn: true))
+            coordinator.go(to: .punchSuccess(
+                name: employee.fullName,
+                didClockIn: true,
+                employeeID: employee.id,
+                punchID: newLog.id
+            ))
             return
         }
 
@@ -592,7 +561,12 @@ struct VerificationView: View {
             try? modelContext.save()
             Feedback.success()
             syncEngine.syncAfterPunch()
-            coordinator.go(to: .punchSuccess(name: employee.fullName, didClockIn: false))
+            coordinator.go(to: .punchSuccess(
+                name: employee.fullName,
+                didClockIn: false,
+                employeeID: employee.id,
+                punchID: closedPunchID
+            ))
         } else {
             // Plain clock-in path.
             let role = selectedShiftRole ?? .instructor
@@ -610,21 +584,102 @@ struct VerificationView: View {
             try? modelContext.save()
             Feedback.success()
             syncEngine.syncAfterPunch()
-            coordinator.go(to: .punchSuccess(name: employee.fullName, didClockIn: true))
+            coordinator.go(to: .punchSuccess(
+                name: employee.fullName,
+                didClockIn: true,
+                employeeID: employee.id,
+                punchID: log.id
+            ))
         }
+    }
+}
+
+/// Announcement card. Uses the same rounded-surface `.card()` shell as the
+/// question cards so it reads as part of the same screen, with a gold accent
+/// bar + megaphone to mark it as information rather than something the
+/// employee has to answer. Shared between the verification screen (where it
+/// is passive) and the success screen (where it gates the reset), so the two
+/// can never drift into looking like different kinds of notice.
+struct AnnouncementCard: View {
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+
+    let message: KioskMessage
+
+    private var isCompact: Bool { hSizeClass == .compact }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .fill(Theme.brandGradient)
+                .frame(width: 5)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: "megaphone.fill")
+                        .font(.system(size: isCompact ? 14 : 16, weight: .bold))
+                        .foregroundStyle(Theme.gold)
+                    Text(message.title.isEmpty ? "Studio Announcement" : message.title)
+                        .font(.system(size: isCompact ? 15 : 17, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Theme.text)
+                        .multilineTextAlignment(.leading)
+                }
+
+                if !message.body.isEmpty {
+                    Text(message.body)
+                        .font(.system(size: isCompact ? 13 : 15, weight: .medium, design: .rounded))
+                        .foregroundStyle(Theme.textMuted)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .card()
+        .frame(maxWidth: 540)
     }
 }
 
 struct PunchSuccessView: View {
     @Environment(AppCoordinator.self) private var coordinator
+    @Environment(SyncEngine.self) private var syncEngine
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.horizontalSizeClass) private var hSizeClass
+
+    /// How long the kiosk waits before resetting itself when there is
+    /// nothing to acknowledge — just long enough to read your own name.
+    private static let autoDismissDelay: TimeInterval = 2.5
+
+    /// Safety net for the acknowledgement state. The screen is meant to be
+    /// dismissed by a human tapping "Got it", but someone who badges in and
+    /// walks straight to the studio floor must not leave the kiosk parked on
+    /// their name. Generous enough to actually read a notice.
+    private static let acknowledgeTimeout: TimeInterval = 60
 
     let name: String
     let didClockIn: Bool
+    /// Identify the punch that just happened so the screen can find the
+    /// receipts written for it. Nil from call sites with nothing to
+    /// acknowledge (registration), which lands on the plain 2.5s behaviour.
+    let employeeID: UUID?
+    let punchID: UUID?
 
     @State private var show = false
 
+    /// Announcements shown on this punch that this employee has never
+    /// acknowledged, with the matching receipts to stamp on "Got it".
+    /// Snapshotted once in `onAppear` — the punch is already committed, so
+    /// nothing on screen should change underneath the person reading it.
+    @State private var pendingMessages: [KioskMessage] = []
+    @State private var pendingReceipts: [MessageReceipt] = []
+
+    /// Held so a second punch arriving while this one is still on screen
+    /// can't leave an older timer alive to reset the kiosk out from under it.
+    @State private var dismissTask: Task<Void, Never>?
+
     private var isCompact: Bool { hSizeClass == .compact }
+
+    private var needsAcknowledgement: Bool { !pendingMessages.isEmpty }
 
     var body: some View {
         GeometryReader { geo in
@@ -637,7 +692,7 @@ struct PunchSuccessView: View {
             ZStack {
                 Theme.backgroundGradient.ignoresSafeArea()
 
-                VStack(spacing: isCompact ? 24 : 32) {
+                let content = VStack(spacing: isCompact ? 24 : 32) {
                     ZStack {
                         Circle()
                             .fill(Theme.brandGradient)
@@ -665,17 +720,124 @@ struct PunchSuccessView: View {
                             .multilineTextAlignment(.center)
                             .minimumScaleFactor(0.7)
                     }
+
+                    // The punch itself is already committed — these cards are
+                    // the only reason the screen is still up.
+                    ForEach(pendingMessages) { message in
+                        AnnouncementCard(message: message)
+                    }
+
+                    if needsAcknowledgement {
+                        Button(action: acknowledge) {
+                            Text("Got it")
+                                .font(.system(size: isCompact ? 18 : 22, weight: .bold, design: .rounded))
+                                .tracking(1)
+                        }
+                        .buttonStyle(PrimaryButtonStyle())
+                        .frame(maxWidth: 540)
+                    }
                 }
                 .padding(.horizontal, isCompact ? 24 : 32)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity)
+
+                // A long announcement on a compact device can outgrow the
+                // screen, so the gated state scrolls; the plain success
+                // state keeps its centred, non-scrolling layout.
+                if needsAcknowledgement {
+                    ScrollView {
+                        content.padding(.vertical, isCompact ? 24 : 32)
+                    }
+                } else {
+                    content.frame(maxHeight: .infinity)
+                }
             }
         }
         .onAppear {
             show = true
-            Task {
-                try? await Task.sleep(for: .seconds(2.5))
-                coordinator.goHome()
-            }
+            // The load result is threaded through explicitly rather than
+            // re-read from `pendingMessages`, so the timer length can never
+            // depend on when SwiftUI publishes the state write.
+            startDismissTimer(gated: loadPendingAcknowledgements())
         }
+        .onDisappear {
+            dismissTask?.cancel()
+            dismissTask = nil
+        }
+    }
+
+    // MARK: - Acknowledgement
+
+    /// Finds the announcements this punch displayed that the employee has
+    /// never acknowledged on *any* punch. Once someone has tapped "Got it"
+    /// on a notice it keeps appearing on the verification screen but stops
+    /// gating the kiosk — nobody should have to dismiss the same sign twice.
+    /// Returns whether anything ended up needing acknowledgement.
+    @discardableResult
+    private func loadPendingAcknowledgements() -> Bool {
+        guard let employeeID, let punchID else { return false }
+
+        var mine = FetchDescriptor<MessageReceipt>(
+            predicate: #Predicate<MessageReceipt> {
+                $0.employeeID == employeeID && $0.punchID == punchID
+            }
+        )
+        mine.fetchLimit = 50
+        let thisPunch = (try? modelContext.fetch(mine)) ?? []
+        guard !thisPunch.isEmpty else { return false }
+
+        let acknowledged = (try? modelContext.fetch(
+            FetchDescriptor<MessageReceipt>(
+                predicate: #Predicate<MessageReceipt> {
+                    $0.employeeID == employeeID && $0.acknowledgedAt != nil
+                }
+            )
+        )) ?? []
+        let acknowledgedIDs = Set(acknowledged.map(\.messageID))
+
+        let unacknowledged = thisPunch.filter { !acknowledgedIDs.contains($0.messageID) }
+        guard !unacknowledged.isEmpty else { return false }
+
+        // Receipts survive the message they point at (the portal can delete
+        // an announcement at any time), so the card list is driven by the
+        // messages that still exist and the receipts follow from those.
+        let wanted = Set(unacknowledged.map(\.messageID))
+        let messages = (try? modelContext.fetch(
+            FetchDescriptor<KioskMessage>(sortBy: [SortDescriptor(\KioskMessage.sortOrder)])
+        )) ?? []
+        pendingMessages = messages.filter { wanted.contains($0.id) }
+
+        let shownIDs = Set(pendingMessages.map(\.id))
+        pendingReceipts = unacknowledged.filter { shownIDs.contains($0.messageID) }
+        return !pendingMessages.isEmpty
+    }
+
+    /// One timer, replaced rather than stacked, so a rapid second punch can
+    /// never inherit the previous screen's countdown.
+    private func startDismissTimer(gated: Bool) {
+        dismissTask?.cancel()
+        let delay = gated ? Self.acknowledgeTimeout : Self.autoDismissDelay
+        dismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            coordinator.goHome()
+        }
+    }
+
+    private func acknowledge() {
+        dismissTask?.cancel()
+        dismissTask = nil
+        Feedback.tap()
+
+        let now = Date()
+        for receipt in pendingReceipts {
+            receipt.acknowledgedAt = now
+            // Re-dirtied even when the seen-only version already reached the
+            // server: the push is a whole-row upsert, so the next run simply
+            // overwrites that row with the acknowledged one.
+            receipt.needsSync = true
+        }
+        try? modelContext.save()
+        syncEngine.syncAfterPunch()
+        coordinator.goHome()
     }
 }
